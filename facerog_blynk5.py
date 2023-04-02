@@ -216,7 +216,7 @@ while True:
                 continue
 
             # Resize the input frame
-            frame = cv2.resize(frame, (480, 480))
+            frame = cv2.resize(frame, (320, 320))
 
             # Pass by reference.
             frame.flags.writeable = False
