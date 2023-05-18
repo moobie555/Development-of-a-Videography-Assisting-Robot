@@ -30,7 +30,7 @@ v7_value = 5   #default time for dolly time
 v8_value = None
 
 distance = 0 #Initialize distance variable
-
+Errorfactor = 0
 
 # Set up the serial connection
 ser = serial.Serial('/dev/ttyUSB0', 115200)
@@ -40,7 +40,8 @@ face_mesh = mp_face_mesh.FaceMesh()
 
 pwm = 64 #default pwm
 
-video_style_range = 50 #default Video Style to Medium mode
+video_style_range = 100 #default Video Style to Medium mode
+Style_Mode = "Close-up shot"
 
 # Define Calibration index for calibrate distance
 CalibrationIndex = 0.5
@@ -58,64 +59,15 @@ def move_motor_B(motor_num ,pwm):
     command = f"MB{motor_num}:{pwm}\n"
     ser.write(command.encode())
 
-def motor_forward():
-    print('forward')
-    move_motor_A(1 ,pwm)
-    move_motor_A(2 ,0)
-    move_motor_B(1 ,pwm)
-    move_motor_B(2 ,0)
-
-def motor_forward_left():
-    print('forward left')
-    move_motor_A(1 ,0)
-    move_motor_A(2 ,pwm)
-    move_motor_B(1 ,pwm)
-    move_motor_B(2 ,0)
-
-def motor_forward_right():
-    print('forward right')
-    move_motor_A(1 ,pwm)
-    move_motor_A(2 ,0)
-    move_motor_B(1 ,0)
-    move_motor_B(2 ,pwm)
-
-def motor_stop():
-    print('stop')
-    move_motor_A(1 ,0)
-    move_motor_A(2 ,0)
-    move_motor_B(1 ,0)
-    move_motor_B(2 ,0)
-
-def motor_backward():
-    print('backward')
-    move_motor_A(1 ,0)
-    move_motor_A(2 ,pwm)
-    move_motor_B(1 ,0)
-    move_motor_B(2 ,pwm)
-
-def motor_backward_left():
-    print('backward left')
-    move_motor_A(1 ,pwm)
-    move_motor_A(2 ,0)
-    move_motor_B(1 ,0)
-    move_motor_B(2 ,pwm)
-
-def motor_backward_right():
-    print('backward right')
-    move_motor_A(1 ,0)
-    move_motor_A(2 ,pwm)
-    move_motor_B(1 ,pwm)
-    move_motor_B(2 ,0)
-
 def read_count_from_serial():
+    global RPM1
     while ser.in_waiting > 0:
         line = ser.readline().decode().strip()
         if line.startswith("COUNT:"):
-            RPM = int(line.split(":")[1])
-            return RPM
+            RPM1 = int(line.split(":")[1])
+            return RPM1
     return None
 
-#define PID control
 class PID:
     def __init__(self, Kp, Ki, Kd, setpoint, min_output, max_output):
         self.Kp = Kp
@@ -127,7 +79,6 @@ class PID:
         self.previous_error = 0
         self.integral = 0
         self.time_previous = time.time()
-
     def update(self, current_value):
         time_now = time.time()
         delta_time = time_now - self.time_previous
@@ -143,23 +94,30 @@ class PID:
         self.time_previous = time_now
 
         return output
-  
-servo1_pid = PID(Kp=0.5, Ki=0.0, Kd=0.0, setpoint=90, min_output=0, max_output=90)
-servo2_pid = PID(Kp=0.5, Ki=0.0, Kd=0.0, setpoint=90, min_output=0, max_output=90)
-dc_motor_pid = PID(Kp=1.0, Ki=0.0, Kd=0.0, setpoint=64, min_output= 0, max_output=255)
+    
+servo1_pid = PID(Kp=0.05, Ki=0.001, Kd=0, setpoint=90, min_output=0, max_output=90)
+servo2_pid = PID(Kp=0.05, Ki=0.001, Kd=0, setpoint=90, min_output=0, max_output=90)
 
 def facetracking():
+
+    global degreeHorizon
+    global degreeVertical
+    global distance
 
     # Initialize variables for FPS calculation
     fps_hist = []
     prev_time = 0
     fps = 0
-
+    
     # Initialize lists to store data for plotting graphs
     x_pan = []
     y_pan = []
     x_tilt = []
     y_tilt = []
+
+    nose_landmark_timer = 0
+    nose_landmark_threshold = 30  # Time threshold in seconds
+    time_robot_stop = 0
     
     # Initialize pose detection
     print('Initialize pose detection')
@@ -170,10 +128,6 @@ def facetracking():
     
     while cap.isOpened():
         
-        global degreeHorizon
-        global degreeVertical
-        global distance
-
         # Capture frame-by-frame
         ret, frame = cap.read()
 
@@ -194,41 +148,64 @@ def facetracking():
         # Draw the pose annotation on the image.
         frame.flags.writeable = True
 
+      
+
         # Draw info on frame
         if results.multi_face_landmarks:
             for face_landmarks in results.multi_face_landmarks:
                 nose_landmark = face_landmarks.landmark[4]
+               
 
-                degreeHorizon = ((nose_landmark.x) * 90)
-                degreeVertical = ((nose_landmark.y) * 90)
-                distance = (-1 / (nose_landmark.z)) * 100 * CalibrationIndex
+                if nose_landmark is not None:
 
-                # Convert the nose landmark from normalized coordinates to pixel coordinates
-                x = int(nose_landmark.x * cap_width)
-                y = int(nose_landmark.y * cap_height)
+                    # Reset the timer since a valid nose_landmark is detected
+                    nose_landmark_timer = 0
+                    time_robot_stop = nose_landmark_threshold
 
-                # Draw a circle at the nose landmark
-                cv2.circle(frame, (x, y), 5, (0, 255, 0), -1)
+                    degreeHorizon = ((nose_landmark.x) * 90)
+                    degreeVertical = ((nose_landmark.y) * 90)
+                    distance = (-1 / (nose_landmark.z)) * 10 * CalibrationIndex
+
+                    if degreeHorizon < 0:
+                        degreeHorizon = 0
+
+                    elif degreeHorizon > 90:
+                        degreeHorizon = 90 
+
+                    # Convert the nose landmark from normalized coordinates to pixel coordinates
+                    x = int(nose_landmark.x * cap_width)
+                    y = int(nose_landmark.y * cap_height)
+
+                    # Draw a circle at the nose landmark
+                    cv2.circle(frame, (x, y), 5, (0, 255, 0), -1)
+                                    
+                    x_centroid = x - 240
+                    y_centroid = y - 240
+
+                    # Add data to lists for plotting graphs
+                    x_pan.append(time.time())
+                    y_pan.append(x_centroid)
+                    x_tilt.append(time.time())
+                    y_tilt.append(y_centroid)   
+
+                # Update PID controllers
+                servo1_output = servo1_pid.update(degreeHorizon)
+                servo2_output = servo2_pid.update(degreeVertical)
+                #dc_motor_output = dc_motor_pid.update(RPM)
+
+                # Send the output to the servos and DC motor
+                move_servo(1, servo1_output)
+                move_servo(2, servo2_output)
+
+        else:
+            # Increment the timer when nose_landmark is None
+            nose_landmark_timer += 1
+            time_robot_stop = nose_landmark_threshold - nose_landmark_timer
                 
-                x_centroid = x-240
-                y_centroid = y-240
+        if nose_landmark_timer >= nose_landmark_threshold:
+            distance = 0
+            time_robot_stop = 0
 
-                # Add data to lists for plotting graphs
-                x_pan.append(time.time())
-                y_pan.append(x_centroid)
-                x_tilt.append(time.time())
-                y_tilt.append(y_centroid)
-
-
-            # Update PID controllers
-            servo1_output = servo1_pid.update(degreeHorizon)
-            servo2_output = servo2_pid.update(degreeVertical)
-            #dc_motor_output = dc_motor_pid.update(RPM)
-
-            # Send the output to the servos and DC motor
-            move_servo(1, servo1_output)
-            move_servo(2, servo2_output)
-        
         curr_time = time.time()
         elapsed_time = curr_time - prev_time
         prev_time = curr_time
@@ -237,6 +214,9 @@ def facetracking():
 
         # Display the FPS on the frame
         cv2.putText(frame, f"FPS: {fps}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        cv2.putText(frame, f"Distance: {distance}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        cv2.putText(frame, f"Mode: {Style_Mode}", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        cv2.putText(frame, f"Robot stop in : {time_robot_stop}", (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
         # Display the frame
         cv2.imshow('Monitoring', frame)
@@ -247,38 +227,30 @@ def facetracking():
             pan_avg_err = (np.mean(np.abs(y_pan))/240)*100
             tilt_avg_err = (np.mean(np.abs(y_tilt))/240)*100
             fps_avg = (np.mean(np.abs(fps_hist)))
-            # Plot the Pan graph
+            
+            # Plot Pan and Tilt graph
             plt.figure()
-            plt.plot(x_pan, y_pan)
-            plt.title('Pan')
+            plt.plot(x_pan, y_pan, color='blue', label='Pan')
+            plt.plot(x_pan, y_tilt, color='green', label='Tilt')
+            plt.title('Pan and Tilt')
             plt.xlabel('Time')
-            plt.ylabel('Pan error')
+            plt.ylabel('Error')
             plt.ylim(-240, 240)
             plt.axhline(y=0, color='r', linestyle='-')
             plt.axhline(y=-48, color='orange', linestyle='--')
             plt.axhline(y=48, color='orange', linestyle='--')
-            plt.text(0.60, 0.05, f'%average error: {pan_avg_err:.2f}' ' %', transform=plt.gca().transAxes)
+            plt.text(0.60, 0.05, f'Pan average error: {pan_avg_err:.2f}' ' %', transform=plt.gca().transAxes)
+            plt.text(0.60, 0.15, f'Tilt average error: {tilt_avg_err:.2f}' ' %', transform=plt.gca().transAxes)
+            plt.legend()
 
-            # Plot the Tilt graph
-            plt.figure()
-            plt.plot(x_tilt, y_tilt)
-            plt.title('Tilt')
-            plt.xlabel('Time')
-            plt.ylabel('Tilt error')
-            plt.ylim(-240, 240)
-            plt.axhline(y=0, color='r', linestyle='-')
-            plt.axhline(y=-48, color='orange', linestyle='--')
-            plt.axhline(y=48, color='orange', linestyle='--')
-            plt.text(0.60, 0.05, f'%average error: {tilt_avg_err:.2f}' ' %', transform=plt.gca().transAxes)
-
-            #Plot FPS
+            # Plot FPS
             plt.figure()
             plt.plot(np.arange(len(fps_hist)), fps_hist)
-            plt.title('fps over Time')
-            plt.xlabel('frame')
-            plt.ylabel('fps')
-            plt.text(0.70, 0.05, f'average: {fps_avg:.0f}' ' fps', transform=plt.gca().transAxes)
-            plt.axhline(y = fps_avg, color='red', linestyle='--')
+            plt.title('FPS over Time')
+            plt.xlabel('Frame')
+            plt.ylabel('FPS')
+            plt.text(0.70, 0.05, f'Average FPS: {fps_avg:.0f}', transform=plt.gca().transAxes)
+            plt.axhline(y=fps_avg, color='red', linestyle='--')
 
             # Show the plots
             plt.show()
@@ -287,7 +259,6 @@ def facetracking():
     # Release the video capture and close all windows
     cap.release()
     cv2.destroyAllWindows()
-
                         
 #recieve Max Speed
 def on_v0_write(values):
@@ -314,16 +285,20 @@ def on_v3_write(values):
 #recieve Video Style
 def on_v4_write(values):
     global video_style_range
+    global Style_Mode
     v4_value = values[0]
     if v4_value is not None and int(v4_value) == 1:
         print('You are in Close-up shot mode')
-        video_style_range = 50
+        video_style_range = 100
+        Style_Mode = "Close-up shot"
     elif v4_value is not None and int(v4_value) == 2:
         print('You are in Medium shot mode')
-        video_style_range = 100
+        video_style_range = 200
+        Style_Mode = "Medium shot"
     elif v4_value is not None and int(v4_value) == 3:
         print('You are in Long shot mode')
-        video_style_range = 200
+        video_style_range = 300
+        Style_Mode = "Long shot"
 
 #recieve Dolly In
 def on_v5_write(values):
@@ -347,7 +322,10 @@ def on_v8_write(values):
     if v8_value == '1':
         print('Emergency Stop')
         while v8_value == '1':
-            motor_stop()   #Motor Stop
+            move_motor_A(1 ,0)
+            move_motor_A(2 ,0)
+            move_motor_B(1 ,0)
+            move_motor_B(2 ,0)
             blynk.run()
 
 blynk.on("V0", on_v0_write)
@@ -367,57 +345,83 @@ while True:
     
     blynk.run()
     
-    # RPM = read_count_from_serial()
-    # if RPM is not None:
-    #     print(f"RPM: {RPM}")
-    # frame = facetracking
+    RPM = read_count_from_serial()
+    if RPM is not None:
+        print(f"RPM: {RPM1}")
+
     
     #Check Auto Mode?
     if v1_value == '0':
-        print('Auto mode')
-        
 
         if distance > video_style_range:
-            move_motor_A(1 ,(degreeHorizon/90)*pwm)
-            move_motor_A(2 ,0)
-            move_motor_B(1 ,((90-degreeHorizon)/90)*pwm)
-            move_motor_B(2 ,0)
+            if degreeHorizon <= 45: #error in left
+                Errorfactor = degreeHorizon/45
+                move_motor_A(1 ,pwm*Errorfactor)
+                move_motor_A(2 ,0)
+                move_motor_B(1 ,pwm)
+                move_motor_B(2 ,0)
+            elif degreeHorizon > 45:
+                Errorfactor = (90-degreeHorizon)/45
+                move_motor_A(1 ,pwm)
+                move_motor_A(2 ,0)
+                move_motor_B(1 ,pwm*Errorfactor)
+                move_motor_B(2 ,0)
+            
         elif distance < video_style_range:
-            motor_stop()
+            move_motor_A(1 ,0)
+            move_motor_A(2 ,0)
+            move_motor_B(1 ,0)
+            move_motor_B(2 ,0)
     
     #Check Manual Mode?
     elif v1_value == '1':
-        print('Manual mode')
+        
         if v1_value == '1':
             blynk.run()
             dolly_time = int(v7_value)
-            if v3_value is not None and int(v3_value) >= 192:
+            if v3_value is not None and int(v3_value) > 128:
                 if v2_value is not None:
                     v2_int = int(v2_value)
-                    if v2_int <= 64:
-                        motor_forward_left()      #motorTurnLeft
-                    elif v2_int >= 192:
-                        motor_forward_right()     #motorTurnRight
-                    elif v2_int > 64 and v2_int < 192:
-                        motor_forward()      #motorForward
+                    if v2_int < 128:
+                        Errorfactor = v2_int/128
+                        move_motor_A(1 ,pwm*Errorfactor)
+                        move_motor_A(2 ,0)
+                        move_motor_B(1 ,pwm)
+                        move_motor_B(2 ,0)
+                    elif v2_int > 128:
+                        Errorfactor = (255-v2_int)/128
+                        move_motor_A(1 ,pwm)
+                        move_motor_A(2 ,0)
+                        move_motor_B(1 ,pwm*Errorfactor)
+                        move_motor_B(2 ,0)
                 else:
                     print("v2_value is None")
-            elif v3_value is not None and int(v3_value) <= 64:
+
+            elif v3_value is not None and int(v3_value) < 128:
                 if v2_value is not None:
                     v2_int = int(v2_value)
-                    if v2_int <= 64:
-                        motor_backward_left()     #motorTurnLeft
-                    elif v2_int >= 192:
-                        motor_backward_right()      #motorTurnRight
-                    elif v2_int > 64 and v2_int < 192:
-                        motor_backward()      #motorBackward
+                    if v2_int < 128:
+                        Errorfactor = v2_int/128
+                        move_motor_A(1 ,0)
+                        move_motor_A(2 ,pwm*Errorfactor)
+                        move_motor_B(1 ,0)
+                        move_motor_B(2 ,pwm)
+                    elif v2_int > 128:
+                        Errorfactor = (255-v2_int)/128
+                        move_motor_A(1 ,0)
+                        move_motor_A(2 ,pwm)
+                        move_motor_B(1 ,0)
+                        move_motor_B(2 ,pwm*Errorfactor)
                 else:
                     print("v2_value is None")
                     
             elif v5_value is not None and int(v5_value) == 1:
                 while v5_value == '1':
                     print('Fade In!')
-                    motor_forward()      #motorForward
+                    move_motor_A(1 ,pwm)
+                    move_motor_A(2 ,0)
+                    move_motor_B(1 ,pwm)
+                    move_motor_B(2 ,0)
                     time.sleep(dolly_time)
                     print('Fade In complete!')
                     blynk.run()
@@ -425,10 +429,17 @@ while True:
             elif v6_value is not None and int(v6_value) == 1:
                 while v6_value == '1':  
                     print('Fade Out!')
-                    motor_backward()      #motorBackward
+                    move_motor_A(1 ,0)
+                    move_motor_A(2 ,pwm)
+                    move_motor_B(1 ,0)
+                    move_motor_B(2 ,pwm)
                     time.sleep(dolly_time)
                     print('Fade Out complete!')
                     blynk.run()
      
             else:
-                motor_stop()      #motorStop
+                move_motor_A(1 ,0)
+                move_motor_A(2 ,0)
+                move_motor_B(1 ,0)
+                move_motor_B(2 ,0)
+
