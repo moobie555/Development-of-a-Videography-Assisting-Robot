@@ -38,7 +38,7 @@ ser = serial.Serial('/dev/ttyUSB0', 115200)
 mp_face_mesh = mp.solutions.face_mesh
 face_mesh = mp_face_mesh.FaceMesh()
 
-pwm = 64 #default pwm
+pwm = 32 #default pwm
 
 video_style_range = 100 #default Video Style to Medium mode
 Style_Mode = "Close-up shot"
@@ -59,14 +59,22 @@ def move_motor_B(motor_num ,pwm):
     command = f"MB{motor_num}:{pwm}\n"
     ser.write(command.encode())
 
-def read_count_from_serial():
-    global RPM1
+def read_count1_from_serial():
     while ser.in_waiting > 0:
         line = ser.readline().decode().strip()
-        if line.startswith("COUNT:"):
+        if line.startswith("COUNT1:"):
             RPM1 = int(line.split(":")[1])
             return RPM1
     return None
+
+def read_count2_from_serial():
+    while ser.in_waiting > 0:
+        line = ser.readline().decode().strip()
+        if line.startswith("COUNT2:"):
+            RPM2 = int(line.split(":")[1])
+            return RPM2
+    return None
+
 
 class PID:
     def __init__(self, Kp, Ki, Kd, setpoint, min_output, max_output):
@@ -345,9 +353,8 @@ while True:
     
     blynk.run()
     
-    RPM = read_count_from_serial()
-    if RPM is not None:
-        print(f"RPM: {RPM1}")
+    RPM1 = read_count1_from_serial()
+    RPM2 = read_count2_from_serial()
 
     
     #Check Auto Mode?
@@ -442,4 +449,3 @@ while True:
                 move_motor_A(2 ,0)
                 move_motor_B(1 ,0)
                 move_motor_B(2 ,0)
-
